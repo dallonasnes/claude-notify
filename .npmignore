@@ -1,0 +1,42 @@
+# Development files
+CLAUDE.md
+*.log
+.git
+.gitignore
+*.env
+node_modules/
+
+# Claude configuration
+.claude/
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Test files
+test/
+tests/
+*.test.js
+*.spec.js
+
+# Documentation
+docs/
+*.md
+!README.md
+
+# CI/CD
+.github/
+.gitlab-ci.yml
+.travis.yml
+
+# Temporary files
+*.tmp
+*.temp
+tmp/
+temp/
