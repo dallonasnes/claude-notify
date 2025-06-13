@@ -30,6 +30,7 @@ const DEBUG_MODE = options.debug;
 
 // Audit logging setup
 const AUDIT_LOG_FILE = path.join(process.cwd(), 'claude-notify-audit.log');
+const DATA_DEBUG_LOG_FILE = path.join(process.cwd(), 'claude-notify-data-debug.log');
 const auditLog = [];
 
 function logStateTransition(event, context = {}) {
@@ -55,6 +56,27 @@ function logStateTransition(event, context = {}) {
   // Write to audit file only in debug mode
   if (DEBUG_MODE) {
     fs.appendFileSync(AUDIT_LOG_FILE, JSON.stringify(entry) + '\n');
+  }
+
+  return entry;
+}
+
+function logDataDebug(data, containsInterruptText, decision, context = {}) {
+  const entry = {
+    timestamp: new Date().toISOString(),
+    dataLength: data.length,
+    containsInterruptText,
+    decision,
+    currentState,
+    rawData: data.toString(),
+    cleanedData: data.toString().replace(/\x1b\[[0-9;]*m/g, ''),
+    hexPreview: data.toString('hex').substring(0, 40),
+    context
+  };
+
+  // Always write data debug logs when in debug mode
+  if (DEBUG_MODE) {
+    fs.appendFileSync(DATA_DEBUG_LOG_FILE, JSON.stringify(entry) + '\n');
   }
 
   return entry;
@@ -219,6 +241,23 @@ claude.onData((data) => {
 
   const containsInterruptText = data.includes('to interrupt)');
 
+  // Log detailed data analysis for debugging
+  let stateDecision = 'NO_CHANGE';
+  if (containsInterruptText && currentState !== 'WORKING') {
+    stateDecision = 'TRANSITION_TO_WORKING';
+  } else if (!containsInterruptText && currentState === 'WORKING') {
+    stateDecision = 'TRANSITION_TO_WAITING';
+  } else if (!containsInterruptText && currentState === 'IDLE') {
+    stateDecision = 'REMAIN_IDLE';
+  } else if (!containsInterruptText && (currentState === 'WAITING' || currentState === 'NOTIFIED')) {
+    stateDecision = 'OUTPUT_WHILE_WAITING';
+  }
+
+  logDataDebug(data, containsInterruptText, stateDecision, {
+    previousState: currentState,
+    totalChunks: claudeDataChunks.length
+  });
+
   logStateTransition('CLAUDE_OUTPUT_RECEIVED', {
     dataLength: data.length,
     containsInterruptText,
@@ -334,10 +373,21 @@ async function sendSlackNotification() {
     const lastTask = tasks.length > 1 ? tasks[tasks.length - 1] : fullBuffer;
 
     // Clean up the task content
-    const cleanedTask = lastTask
-      .replace(/\x1b\[[0-9;]*m/g, '') // Remove ANSI escape codes
-      .trim()
-      .substring(0, 1000); // Limit length for Slack
+    let cleanedTask = lastTask.replace(/\x1b\[[0-9;]*m/g, ''); // Remove ANSI escape codes
+
+    // Filter out UI lines: remove lines starting with ✻ and ending with "to interrupt)" plus everything below
+    const lines = cleanedTask.split('\n');
+    const filteredLines = [];
+
+    for (const line of lines) {
+      const trimmedLine = line.trim();
+      if (trimmedLine.includes('esc to interrupt')) {
+        break;
+      }
+      filteredLines.push(line);
+    }
+
+    cleanedTask = filteredLines.join('\n').trim().substring(0, 1000);
 
     const messageText = cleanedTask.length > 0
       ? `Claude completed a task`
