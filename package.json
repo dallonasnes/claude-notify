@@ -1,6 +1,6 @@
 {
   "name": "claude-notify",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "description": "Transparent wrapper for Claude CLI that sends Slack notifications when Claude is waiting for input",
   "bin": {
     "claude-notify": "./bin/claude-notify.js"
