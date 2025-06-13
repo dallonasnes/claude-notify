@@ -10,8 +10,8 @@ const path = require('path');
 program
   .name('claude-notify')
   .description('Transparent wrapper for Claude CLI that sends Slack notifications when Claude is waiting for input.\n\n' +
-              'This is an unofficial wrapper tool, not affiliated with Claude or Anthropic.\n' +
-              'It transparently passes all arguments to the claude command.')
+    'This is an unofficial wrapper tool, not affiliated with Claude or Anthropic.\n' +
+    'It transparently passes all arguments to the claude command.')
   .version('1.0.0')
   .option('-t, --timeout <ms>', 'idle timeout in milliseconds before sending notification', '15000')
   .option('-w, --webhook-url <url>', 'Slack webhook URL for notifications')
@@ -43,19 +43,20 @@ function logStateTransition(event, context = {}) {
       isClaudeWorking,
       timers: {
         notificationTimer: !!notificationTimer
-      }
+      },
+      bufferChunks: claudeDataChunks.length
     },
     context,
     decision: null
   };
-  
+
   auditLog.push(entry);
-  
+
   // Write to audit file only in debug mode
   if (DEBUG_MODE) {
     fs.appendFileSync(AUDIT_LOG_FILE, JSON.stringify(entry) + '\n');
   }
-  
+
   return entry;
 }
 
@@ -65,6 +66,7 @@ let notificationSent = false;
 let isClaudeWorking = false;
 let notificationTimer = null;
 let currentState = 'IDLE'; // IDLE, WORKING, WAITING, NOTIFIED
+let claudeDataChunks = []; // Store Claude output chunks for performance
 
 // Initialize audit log
 logStateTransition('SESSION_STARTED', {
@@ -89,7 +91,7 @@ if (!NOTIFICATIONS_DISABLED && !SLACK_WEBHOOK_URL) {
 function transitionToState(newState, trigger, context = {}) {
   const oldState = currentState;
   currentState = newState;
-  
+
   logStateTransition('STATE_TRANSITION', {
     from: oldState,
     to: newState,
@@ -110,14 +112,14 @@ function transitionToWaiting(trigger) {
   if (currentState !== 'WAITING') {
     isClaudeWorking = false;
     transitionToState('WAITING', trigger);
-    
+
     // Start notification timer only on state transition
     if (shouldStartNotificationTimer()) {
       logStateTransition('NOTIFICATION_TIMER_STARTED', { timeoutMs: NOTIFICATION_TIMEOUT });
       notificationTimer = setTimeout(() => {
         logStateTransition('NOTIFICATION_TIMER_EXPIRED');
         notificationTimer = null;
-        
+
         if (shouldSendNotification()) {
           sendSlackNotification();
           notificationSent = true;
@@ -127,6 +129,7 @@ function transitionToWaiting(trigger) {
     }
   }
 }
+
 function shouldSendNotification() {
   const entry = logStateTransition('NOTIFICATION_EVALUATION', {
     conditions: {
@@ -136,11 +139,11 @@ function shouldSendNotification() {
       notificationsEnabled: !NOTIFICATIONS_DISABLED
     }
   });
-  
+
   const decision = userHasEngaged && !notificationSent && !isClaudeWorking && !NOTIFICATIONS_DISABLED;
   entry.decision = decision ? 'SEND_NOTIFICATION' : 'SKIP_NOTIFICATION';
   entry.context.reason = decision ? 'all_conditions_met' : getSkipReason();
-  
+
   return decision;
 }
 
@@ -159,11 +162,11 @@ function shouldStartNotificationTimer() {
     noNotificationTimer: !notificationTimer,
     userEngaged: userHasEngaged
   });
-  
+
   const decision = currentState === 'WAITING' && !notificationTimer;
   entry.decision = decision ? 'START_TIMER' : 'SKIP_TIMER';
   entry.context.reason = decision ? 'conditions_met' : 'not_in_waiting_state_or_timer_active';
-  
+
   return decision;
 }
 
@@ -186,7 +189,7 @@ function findClaudeBinary() {
   } catch (e) {
     // Fall through to global claude
   }
-  
+
   // Fall back to global claude command
   return 'claude';
 }
@@ -210,16 +213,20 @@ claude.on('error', (error) => {
 // Monitor Claude's output
 claude.onData((data) => {
   process.stdout.write(data);
-  
+
+  // Accumulate Claude output for task-based notifications
+  claudeDataChunks.push(data);
+
   const containsInterruptText = data.includes('to interrupt)');
-  
+
   logStateTransition('CLAUDE_OUTPUT_RECEIVED', {
     dataLength: data.length,
     containsInterruptText,
     currentState,
+    totalChunks: claudeDataChunks.length,
     cleanedPreview: data.toString().replace(/\x1b\[[0-9;]*m/g, '').substring(0, 100)
   });
-  
+
   // State machine logic - only Claude's output drives state transitions
   if (containsInterruptText && currentState !== 'WORKING') {
     // First time seeing "to interrupt)" - Claude started working
@@ -232,9 +239,9 @@ claude.onData((data) => {
     logStateTransition('REMAINING_IN_IDLE', { reason: 'startup_output_no_interrupt_text' });
   } else if (!containsInterruptText && (currentState === 'WAITING' || currentState === 'NOTIFIED')) {
     // Additional output while waiting - stay in current state, don't restart timers
-    logStateTransition('OUTPUT_WHILE_WAITING', { 
+    logStateTransition('OUTPUT_WHILE_WAITING', {
       reason: 'claude_output_in_waiting_state',
-      currentState 
+      currentState
     });
   }
   // All other cases: stay in current state without logging
@@ -246,22 +253,31 @@ process.stdin.setRawMode(true);
 // Forward stdin directly to claude
 process.stdin.on('data', (data) => {
   claude.write(data);
-  
+
   const isEnterKey = data.includes('\r') || data.includes('\n');
   const previousUserHasEngaged = userHasEngaged;
   const previousNotificationSent = notificationSent;
-  
+
   logStateTransition('USER_INPUT_RECEIVED', {
     dataLength: data.length,
     isEnterKey,
     currentState,
     keyPreview: data.toString('hex').substring(0, 20)
   });
-  
+
   // Always clear notification timer when user types (shows awareness)
   clearAllTimers('user_input_received');
   notificationSent = false;
-  
+
+  // Reset Claude data buffer when user submits input (Enter key)
+  if (isEnterKey) {
+    logStateTransition('CLAUDE_DATA_BUFFER_RESET', {
+      previousChunks: claudeDataChunks.length,
+      trigger: 'user_submit_input'
+    });
+    claudeDataChunks = [];
+  }
+
   if (notificationSent !== previousNotificationSent) {
     logStateTransition('NOTIFICATION_STATE_RESET', {
       from: previousNotificationSent,
@@ -269,7 +285,7 @@ process.stdin.on('data', (data) => {
       trigger: 'user_input'
     });
   }
-  
+
   // Mark user as engaged when they submit input (Enter key)
   if (isEnterKey && !userHasEngaged) {
     userHasEngaged = true;
@@ -279,7 +295,7 @@ process.stdin.on('data', (data) => {
       trigger: 'first_message_submitted'
     });
   }
-  
+
   // Handle state transitions - user input resets us from NOTIFIED back to WAITING
   if (currentState === 'NOTIFIED') {
     transitionToState('WAITING', 'user_input_after_notification');
@@ -296,24 +312,37 @@ claude.onExit(({ exitCode }) => {
 // Send Slack notification
 async function sendSlackNotification() {
   logStateTransition('SLACK_NOTIFICATION_ATTEMPT');
-  
+
   if (NOTIFICATIONS_DISABLED) {
     logStateTransition('SLACK_NOTIFICATION_SKIPPED', { reason: 'notifications_disabled' });
     return;
   }
-  
+
   if (!SLACK_WEBHOOK_URL) {
     logStateTransition('SLACK_NOTIFICATION_FAILED', { reason: 'no_webhook_url' });
     // Silently fail - no console output
     return;
   }
-  
+
   try {
     const sessionId = process.pid;
     const cwd = process.cwd();
-    
-    const messageText = `Claude is waiting for your input`;
-    
+
+    // Extract the last task from Claude's output
+    const fullBuffer = claudeDataChunks.join('');
+    const tasks = fullBuffer.split('●');
+    const lastTask = tasks.length > 1 ? tasks[tasks.length - 1] : fullBuffer;
+
+    // Clean up the task content
+    const cleanedTask = lastTask
+      .replace(/\x1b\[[0-9;]*m/g, '') // Remove ANSI escape codes
+      .trim()
+      .substring(0, 1000); // Limit length for Slack
+
+    const messageText = cleanedTask.length > 0
+      ? `Claude completed a task`
+      : `Claude is waiting for your input`;
+
     const payload = {
       text: messageText,
       blocks: [
@@ -323,23 +352,42 @@ async function sendSlackNotification() {
             type: "mrkdwn",
             text: `🤖 *${messageText}*`
           }
-        },
-        {
-          type: "context",
-          elements: [
-            {
-              type: "mrkdwn",
-              text: `Session ID: ${sessionId} | Directory: \`${cwd}\``
-            }
-          ]
         }
       ]
     };
-    
+
+    // Add task content if available
+    if (cleanedTask.length > 0) {
+      payload.blocks.push({
+        type: "section",
+        text: {
+          type: "mrkdwn",
+          text: `\`\`\`${cleanedTask}\`\`\``
+        }
+      });
+    }
+
+    // Add context footer
+    payload.blocks.push({
+      type: "context",
+      elements: [
+        {
+          type: "mrkdwn",
+          text: `Session ID: ${sessionId} | Directory: \`${cwd}\``
+        }
+      ]
+    });
+
+    logStateTransition('SLACK_NOTIFICATION_PAYLOAD_PREPARED', {
+      taskContentLength: cleanedTask.length,
+      totalChunks: claudeDataChunks.length,
+      totalTasks: tasks.length
+    });
+
     await axios.post(SLACK_WEBHOOK_URL, payload);
     logStateTransition('SLACK_NOTIFICATION_SUCCESS');
   } catch (error) {
-    logStateTransition('SLACK_NOTIFICATION_FAILED', { 
+    logStateTransition('SLACK_NOTIFICATION_FAILED', {
       error: error.message,
       reason: 'api_error'
     });
