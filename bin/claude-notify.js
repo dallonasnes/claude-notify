@@ -175,8 +175,25 @@ function clearAllTimers(reason) {
   }
 }
 
+// Find the claude binary path
+function findClaudeBinary() {
+  // Try to use the bundled claude first
+  try {
+    const bundledPath = path.resolve(__dirname, '../node_modules/.bin/claude');
+    if (fs.existsSync(bundledPath)) {
+      return bundledPath;
+    }
+  } catch (e) {
+    // Fall through to global claude
+  }
+  
+  // Fall back to global claude command
+  return 'claude';
+}
+
 // Spawn claude subprocess with PTY
-const claude = pty.spawn('claude', claudeArgs, {
+const claudeBinary = findClaudeBinary();
+const claude = pty.spawn(claudeBinary, claudeArgs, {
   name: 'xterm-256color',
   cols: process.stdout.columns || 80,
   rows: process.stdout.rows || 24,

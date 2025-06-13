@@ -22,7 +22,7 @@
     "url": "https://github.com/dallonasnes/claude-notify.git"
   },
   "dependencies": {
-    "@anthropic-ai/claude-code": "^1.0.0",
+    "@anthropic-ai/claude-code": "^1.0.22",
     "axios": "^1.6.2",
     "commander": "^14.0.0",
     "node-pty": "^1.0.0"
